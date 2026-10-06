@@ -35,7 +35,7 @@ See [the architecture and week-by-week scope](docs/architecture.md), [agent cont
 
 - Six non-overlapping specialist roles and one orchestration-only coordinator. The coordinator routes the raw review to preprocessing first, then routes the preprocessor JSON output to the analysis agents.
 - Structured JSON messages passed between agents; the prototype validates required message-envelope fields and that payloads are JSON objects. Agent-specific payload fields follow the documented contracts but are not checked against a full schema.
-- Direct interaction: the evidence agent consumes sentiment and provenance reports; synthesis consumes context, task, and evidence reports.
+- Direct interaction: the evidence agent consumes sentiment and provenance reports; synthesis consumes context, both task reports, and the evidence report.
 - Explicit per-run state, a maximum of eight agent steps, bounded retries for message validation, and JSONL event logging.
 - A measured workload summary that separately records every specialist invocation and counts tool/LLM calls for the 40% threshold. The demo trace reports each agent's share and whether the largest share stays under the rubric threshold.
 - Local domain lexicon and a Python-based text-feature tool as two explicit local information/tools.
