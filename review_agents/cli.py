@@ -8,11 +8,18 @@ from .orchestrator import Orchestrator, write_jsonl
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Analyze a review using the Week 5 multi-agent prototype")
     parser.add_argument("--text", help="Review text to analyze")
-    parser.add_argument("--domain", choices=["product", "electronics", "hotel", "movie", "restaurant", "mixed"])
+    parser.add_argument("--domain", help="Domain label; unknown domains use the general lexicon with a warning")
     parser.add_argument("--json", action="store_true", help="Print result as JSON")
     parser.add_argument("--show-trace", action="store_true", help="Print inter-agent trace")
     parser.add_argument("--log-dir", help="Save call trace as JSONL in this folder")
+    parser.add_argument("--web", action="store_true", help="Start the local web interface")
+    parser.add_argument("--host", default="127.0.0.1", help="Web bind address (default: localhost only)")
+    parser.add_argument("--port", type=int, default=8000, help="Web port (default: 8000)")
     args = parser.parse_args(argv)
+    if args.web:
+        from .web import serve
+        serve(args.host, args.port, args.log_dir or "runs")
+        return 0
     review = args.text
     domain = args.domain
     if review is None:
@@ -23,10 +30,13 @@ def main(argv=None):
         except (EOFError, KeyboardInterrupt):
             print("Input cancelled.", file=sys.stderr)
             return 2
+    orchestrator = Orchestrator()
     try:
-        result, state = Orchestrator().run(review, domain or "mixed")
+        result, state = orchestrator.run(review, domain or "mixed")
     except (ValueError, RuntimeError) as exc:
         print(f"Could not analyze review: {exc}", file=sys.stderr)
+        if args.log_dir and orchestrator.last_state:
+            print(f"Failure trace saved to {write_jsonl(orchestrator.last_state, args.log_dir)}", file=sys.stderr)
         return 2
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

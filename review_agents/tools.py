@@ -42,6 +42,20 @@ def load_lexicons(state, agent: str) -> dict[str, Any]:
     return _run_tool(state, agent, "load_domain_lexicon", {"source": "data/domain_lexicons.json"}, load)
 
 
+def validate_request(review: str, domain: str, state, agent: str) -> dict[str, Any]:
+    def validate():
+        errors = []
+        if not isinstance(review, str) or not review.strip():
+            errors.append("Review text cannot be empty")
+        elif len(review) > 5000:
+            errors.append("Review is too long (maximum 5000 characters)")
+        if not isinstance(domain, str) or not domain.strip() or len(domain) > 40:
+            errors.append("Domain must be a non-empty label of at most 40 characters")
+        return {"valid": not errors, "errors": errors}
+    return _run_tool(state, agent, "validate_request", {"review_chars": len(review) if isinstance(review, str) else None,
+                                                        "domain": domain}, validate)
+
+
 def tokenize(text: str) -> list[str]:
     """Tool 1: deterministic token and punctuation feature extraction."""
     return re.findall(r"[\w']+|[!?.,;:]+", text.lower(), flags=re.UNICODE)
@@ -56,6 +70,33 @@ def text_features(text: str, state, agent: str) -> dict[str, Any]:
                 "avg_word_length": round(sum(map(len, words)) / max(1, len(words)), 2),
                 "exclamation_count": text.count("!"), "comma_count": text.count(",")}
     return _run_tool(state, agent, "text_features", {"input_chars": len(text)}, extract)
+
+
+def detect_language(tokens: list[str], state, agent: str) -> dict[str, Any]:
+    english_markers = {"the", "is", "was", "were", "and", "but", "not", "with", "for", "this", "that",
+                       "very", "good", "bad", "great", "service", "room", "product", "delivery", "battery",
+                       "excellent", "terrible", "after", "quick", "slow", "comfortable", "recommend"}
+    def detect():
+        letters = [char for token in tokens for char in token if char.isalpha()]
+        cyrillic = sum("\u0400" <= char <= "\u052f" for char in letters)
+        latin = sum("A" <= char <= "Z" or "a" <= char <= "z" for char in letters)
+        english_hits = sorted(set(tokens) & english_markers)
+        total = max(1, len(letters))
+        if not letters:
+            language, confidence = "unknown", 0.0
+        elif cyrillic / total >= 0.15 and latin / total >= 0.15:
+            language, confidence = "mixed", 0.65
+        elif cyrillic / total >= 0.15:
+            language, confidence = "cyrillic_unresolved", 0.8
+        elif english_hits:
+            language, confidence = "en", min(0.95, 0.65 + 0.05 * len(english_hits))
+        else:
+            language, confidence = "unknown", 0.35
+        return {"language": language, "confidence": round(confidence, 2),
+                "english_marker_hits": english_hits,
+                "supported_for_current_lexicon": language == "en",
+                "method": "lightweight_language_heuristic"}
+    return _run_tool(state, agent, "detect_language", {"token_count": len(tokens)}, detect)
 
 
 def provenance_cues(tokens: list[str], features: dict[str, Any], state, agent: str) -> dict[str, Any]:
@@ -96,6 +137,32 @@ def check_evidence(tokens: list[str], sentiment: dict[str, Any], provenance: dic
                 "upstream_agents": ["sentiment_agent", "provenance_agent"]}
     return _run_tool(state, agent, "check_evidence_against_source",
                      {"token_count": len(tokens), "upstream_agents": ["sentiment_agent", "provenance_agent"]}, check)
+
+
+def reliability_gate(language: dict[str, Any], context: dict[str, Any],
+                     sentiment: dict[str, Any], provenance: dict[str, Any],
+                     evidence: dict[str, Any], state, agent: str) -> dict[str, Any]:
+    def assess():
+        reasons = []
+        if not language["supported_for_current_lexicon"]:
+            reasons.append("language_not_supported_by_current_lexicon")
+            decision = "abstain"
+        elif not evidence["grounded"]:
+            reasons.append("evidence_not_grounded_in_source")
+            decision = "manual_review"
+        else:
+            if sentiment["confidence"] < 0.5:
+                reasons.append("low_sentiment_support")
+            if provenance["confidence"] < 0.5:
+                reasons.append("low_provenance_support")
+            if context["domain_support"] != "known":
+                reasons.append("domain_specific_lexicon_unavailable")
+            decision = "review_with_caveats" if reasons else "ready_within_prototype_scope"
+        return {"decision": decision, "reasons": reasons,
+                "supported_language": language["supported_for_current_lexicon"],
+                "evidence_grounded": evidence["grounded"]}
+    return _run_tool(state, agent, "apply_reliability_policy",
+                     {"language": language["language"], "domain": context["domain"]}, assess)
 
 
 def log_event(state, event: dict[str, Any]) -> None:

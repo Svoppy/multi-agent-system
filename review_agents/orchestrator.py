@@ -5,59 +5,81 @@ from uuid import uuid4
 import json
 import time
 
-from .agents import (ContextAgent, EvidenceAgent, PreprocessingAgent, ProvenanceAgent,
+from .agents import (ContextAgent, EvidenceAgent, LanguageAgent, PreprocessingAgent,
+                     ProvenanceAgent, ReliabilityAgent, RequestValidationAgent,
                      SentimentAgent, SynthesisAgent)
 from .messages import AgentMessage, RunState
 from .tools import log_event
 
 
 class Orchestrator:
-    STEP_LIMIT = 8
+    STEP_LIMIT = 12
+    TIME_LIMIT_SECONDS = 15
     RETRIES = 1
 
     def __init__(self):
+        self.validation = RequestValidationAgent()
         self.preprocessing = PreprocessingAgent()
+        self.language = LanguageAgent()
         self.context = ContextAgent()
         self.sentiment = SentimentAgent()
         self.provenance = ProvenanceAgent()
         self.evidence = EvidenceAgent()
+        self.reliability = ReliabilityAgent()
         self.synthesis = SynthesisAgent()
+        self.last_state: RunState | None = None
 
     def run(self, review: str, domain: str = "mixed") -> tuple[dict[str, Any], RunState]:
-        if not review.strip():
-            raise ValueError("Review text cannot be empty")
-        if len(review) > 5000:
-            raise ValueError("Review is too long (maximum 5000 characters)")
         run_id = str(uuid4())
         state = RunState(run_id, review, domain, step_limit=self.STEP_LIMIT)
-        self._invoke(state, self.preprocessing, {"review": review})
-        common = state.reports["preprocessing_agent"]
-        agents = [self.context, self.sentiment, self.provenance]
-        for agent in agents:
-            self._invoke(state, agent, common)
-        # Explicit hand-off: evidence consumes outputs produced by two independent agents.
-        evidence_input = {**common, "sentiment": state.reports["sentiment_agent"],
-                          "provenance": state.reports["provenance_agent"]}
-        self._invoke(state, self.evidence, evidence_input)
-        synthesis_input = {**evidence_input, "context": state.reports["context_agent"],
-                           "evidence": state.reports["evidence_agent"]}
-        self._invoke(state, self.synthesis, synthesis_input)
-        workload = workload_summary(state.events)
-        state.reports["synthesis_agent"]["workload"] = workload
-        state.events.append({"event": "run_complete", "run_id": run_id, "steps": state.steps,
-                             "workload": workload})
-        return state.reports["synthesis_agent"], state
+        self.last_state = state
+        try:
+            self._invoke(state, self.validation, {"review": review, "domain": domain})
+            validation = state.reports["request_validation_agent"]
+            if not validation["valid"]:
+                raise ValueError("; ".join(validation["errors"]))
+            self._invoke(state, self.preprocessing, {"review": review})
+            common = state.reports["preprocessing_agent"]
+            self._invoke(state, self.language, common)
+            common = {**common, "language": state.reports["language_agent"]}
+            agents = [self.context, self.sentiment, self.provenance]
+            for agent in agents:
+                self._invoke(state, agent, common)
+            # Explicit hand-off: evidence consumes outputs produced by two independent agents.
+            evidence_input = {**common, "sentiment": state.reports["sentiment_agent"],
+                              "provenance": state.reports["provenance_agent"]}
+            self._invoke(state, self.evidence, evidence_input)
+            reliability_input = {**evidence_input, "context": state.reports["context_agent"],
+                                 "evidence": state.reports["evidence_agent"]}
+            self._invoke(state, self.reliability, reliability_input)
+            synthesis_input = {**reliability_input, "reliability": state.reports["reliability_agent"]}
+            self._invoke(state, self.synthesis, synthesis_input)
+            workload = workload_summary(state.events)
+            state.reports["synthesis_agent"]["workload"] = workload
+            state.events.append({"event": "run_complete", "run_id": run_id, "steps": state.steps,
+                                 "elapsed_ms": round((time.monotonic() - state.started_monotonic) * 1000, 3),
+                                 "workload": workload})
+            return state.reports["synthesis_agent"], state
+        except Exception as exc:
+            state.events.append({"event": "run_error", "run_id": run_id, "steps": state.steps,
+                                 "error_type": type(exc).__name__, "error": str(exc)})
+            raise
 
     def _invoke(self, state: RunState, agent, payload: dict[str, Any]) -> None:
         if state.steps >= state.step_limit:
             raise RuntimeError("Step limit reached; run stopped to prevent a loop")
+        elapsed = time.monotonic() - state.started_monotonic
+        if elapsed >= self.TIME_LIMIT_SECONDS:
+            raise RuntimeError(f"Run time limit reached ({self.TIME_LIMIT_SECONDS} seconds)")
         state.steps += 1
         message = AgentMessage.create(state.run_id, "orchestrator", agent.name, "analysis_request", payload)
         started = time.perf_counter()
         for attempt in range(self.RETRIES + 1):
             try:
                 message.validate()
+                agent.validate_input(message.payload)
                 result = agent.execute(state, message.payload)
+                agent.validate_output(result)
                 response = AgentMessage.create(state.run_id, agent.name, "orchestrator", "analysis_result", result)
                 response.validate()
                 state.reports[agent.name] = response.payload
@@ -66,12 +88,12 @@ class Orchestrator:
                                   "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
                                   "input_message": message.to_dict(), "output_message": response.to_dict()})
                 return
-            except (ValueError, KeyError, OSError, TypeError) as exc:
+            except Exception as exc:
                 log_event(state, {"event": "agent_call", "run_id": state.run_id, "agent": agent.name,
                                   "step": state.steps, "attempt": attempt + 1, "status": "error",
                                   "error_type": type(exc).__name__, "error": str(exc)})
                 if attempt >= self.RETRIES:
-                    raise RuntimeError(f"Agent {agent.name} failed: {exc}") from exc
+                    raise RuntimeError(f"Agent {agent.name} failed after {attempt + 1} attempts: {exc}") from exc
 
 
 def write_jsonl(state: RunState, log_dir: str) -> Path:

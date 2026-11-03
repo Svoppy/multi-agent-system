@@ -1,56 +1,51 @@
-# Multi-agent review analysis prototype
+# Multi-agent review analysis system
 
-This Week 5 prototype explores the dissertation topic **Development of a Multitask Transformer-Based Model and Web System for Joint Sentiment Analysis and AI-Generated Review Provenance Classification: A Controlled Mixed-Domain Study**.
+This project implements a review-analysis system for the dissertation **Development of a Multitask Transformer-Based Model and Web System for Joint Sentiment Analysis and AI-Generated Review Provenance Classification: A Controlled Mixed-Domain Study**.
 
-It demonstrates a typed-message pipeline of seven roles: a coordinator plus six specialists. Given one review, a preprocessing specialist first produces tokens and text features; the other specialists inspect domain context, sentiment, provenance cues, and evidence; a synthesis agent combines their reports. This is a deterministic orchestration prototype, not a trained transformer or a validated AI-authorship detector. The distinction matters: provenance is reported as a heuristic risk estimate with evidence and a caveat, not as proof of authorship.
+The current prototype has a coordinator and **nine distinct specialists**: request validation, preprocessing, language, domain context, sentiment, provenance, evidence checking, reliability gating, and synthesis. It runs in CLI or a small local web form. It does not yet load a trained Transformer: current task estimates are transparent heuristics, clearly identified in the output.
 
-## Run
+## Requirements and launch
 
-Requires Python 3.10+ and no third-party packages or API keys. Check the interpreter first; older system `python3` installations are common:
+Python 3.10+; no third-party packages, network access, or API keys required. Check the active interpreter first:
 
 ```bash
 python3 --version
-python3.12 -m review_agents --text "The delivery was quick, but the battery failed after one day." --domain electronics --log-dir runs
+python3.12 -m review_agents --text "The room was clean and comfortable." --domain hotel --json --log-dir runs
 ```
 
-Use any Python 3.10+ interpreter for these commands; `python3.12` is shown as an example. The launcher prints a clear error when run with an older Python version.
+Use any installed Python 3.10+ interpreter; `python3.12` is an example. Older Python versions receive a clear compatibility message.
 
-The saved Week 5 demonstration trace is linked from [the demo scenario](docs/scenarios.md). It records agent invocations separately from LLM/tool calls, then calculates the 40% threshold from actual tool and LLM calls only.
-
-Supported domains: `product`, `electronics`, `hotel`, `movie`, `restaurant`, `mixed`. Use `--json` for a machine-readable final result, `--log-dir runs` to save JSONL agent/tool events, or `--show-trace` to print the agent exchange.
-
-You can also run interactively:
-
-Use any Python 3.10+ interpreter; `python3.12` below is an example.
+Start the local web UI:
 
 ```bash
-python3.12 -m review_agents
+python3.12 -m review_agents --web --host 127.0.0.1 --port 8000 --log-dir runs
 ```
 
-## Architecture
+Open `http://127.0.0.1:8000`. The server binds to localhost by default. The UI validates requests, abstains on unsupported languages, escapes submitted text, displays the reliability decision, and writes per-run JSONL traces.
 
-See [the architecture and week-by-week scope](docs/architecture.md), [agent contracts](docs/agent-specification.md), and [planned evaluation scenarios](docs/scenarios.md).
+## CLI options
 
-## What the prototype demonstrates
+- `--text` and `--domain` analyze one review; omit `--text` for interactive mode.
+- `--json` prints a structured report.
+- `--show-trace` prints the full agent/tool exchange.
+- `--log-dir runs` saves success or failure events as JSONL.
+- `--web [--host HOST] [--port PORT]` serves the local form.
+- Run test scenarios with `python3.12 -m unittest discover -s tests -v`.
 
-- Six non-overlapping specialist roles and one orchestration-only coordinator. The coordinator routes the raw review to preprocessing first, then routes the preprocessor JSON output to the analysis agents.
-- Structured JSON messages passed between agents; the prototype validates required message-envelope fields and that payloads are JSON objects. Agent-specific payload fields follow the documented contracts but are not checked against a full schema.
-- Direct interaction: the evidence agent consumes sentiment and provenance reports; synthesis consumes context, both task reports, and the evidence report.
-- Explicit per-run state, a maximum of eight agent steps, bounded retries for message validation, and JSONL event logging.
-- A measured workload summary that separately records every specialist invocation and counts tool/LLM calls for the 40% threshold. The demo trace reports each agent's share and whether the largest share stays under the rubric threshold.
-- Local domain lexicon and a Python-based text-feature tool as two explicit local information/tools.
-- Transparent sentiment and provenance evidence, uncertainty language, and a reminder not to use provenance estimates as an authorship verdict.
+## Verification
 
-## Limitations and next stage
+The test suite covers English analysis and interaction, unsupported-language abstention, neutral domain terms, unknown-domain fallback, invalid input, bounded retry, deadline enforcement, and the web request handler. See [test scenarios and the saved demo trace](docs/scenarios.md). The trace and workload summary are regenerated from the actual pipeline.
 
-No transformer is loaded or trained. The lexicon scores and provenance cues are placeholders for architecture validation; they have not been calibrated on a controlled mixed-domain corpus. Week 10 work should add the shared multitask model, curated data and split protocol, model/domain tools, stronger evaluation, error recovery, and tests. The architecture document identifies planned integrations without claiming they are already implemented.
+JSONL traces include the submitted review text inside inter-agent messages. Use synthetic or approved text for demonstrations, and apply an appropriate retention/access policy before logging real user reviews.
 
-## Repository layout
+## Design and research materials
 
-```text
-review_agents/       Python package and agent pipeline
-data/domain_lexicons.json  Small transparent prototype lexicon
-docs/                Architecture, contracts, planned scenarios
-runs/                Optional runtime JSONL logs (created by --log-dir)
-```
-# multi-agent-system
+- [System architecture](docs/architecture.md)
+- [Agent specification](docs/agent-specification.md)
+- [Project report](docs/report.md)
+- [Research article protocol draft](docs/article-draft.md)
+- [Research plan and evaluation protocol](docs/implementation-plan.md)
+
+## Limitations
+
+No Transformer is trained or loaded, no controlled corpus has been assembled, and the heuristic outputs are not research findings. The language classifier is a lightweight gate; the current domain lexicon and provenance cues have not been calibrated. See the report and article draft for the planned data construction, baselines, metrics, ethics and limitations. Do not use provenance scores as proof of authorship.

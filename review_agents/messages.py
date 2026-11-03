@@ -2,6 +2,7 @@
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from uuid import uuid4
+import time
 
 
 @dataclass
@@ -21,8 +22,8 @@ class AgentMessage:
         return cls(run_id, str(uuid4()), sender, recipient, message_type, payload)
 
     def validate(self) -> None:
-        required = ("run_id", "message_id", "sender", "recipient", "message_type", "payload")
-        if any(not getattr(self, key) for key in required):
+        required = ("run_id", "message_id", "sender", "recipient", "message_type")
+        if any(not isinstance(getattr(self, key), str) or not getattr(self, key) for key in required):
             raise ValueError("Message is missing a required field")
         if not isinstance(self.payload, dict):
             raise ValueError("Message payload must be an object")
@@ -40,3 +41,4 @@ class RunState:
     steps: int = 0
     reports: dict[str, dict[str, Any]] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
+    started_monotonic: float = field(default_factory=time.monotonic)
